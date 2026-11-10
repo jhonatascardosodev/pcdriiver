@@ -1,12 +1,87 @@
 ﻿# Monitor PC
 
-Painel simples para Windows: CPU/RAM/disco, processos que mais consomem, histórico com gráfico,
-analisador de pastas, limpeza de disco, temperaturas (via LibreHardwareMonitor), lista de drivers
-e correção do pagefile. Fica na bandeja do sistema coletando histórico e avisando quando algo passa do limite.
+Painel para Windows que mostra, em tempo real, o que está pesando no seu computador: CPU, memória, disco, temperaturas e processos. Fica na bandeja do sistema registrando o histórico e avisa quando algo passa do limite.
 
-## Como rodar
+Feito em Python com tkinter, com tema escuro/claro e gráficos interativos.
 
-    pip install -r requirements.txt
-    py app.py
+## Recursos
 
-Ou dê dois cliques em `iniciar.bat`. Para temperaturas e para mover o pagefile, rode como administrador.
+| Aba | O que faz |
+|---|---|
+| **Resumo** | Medidores de CPU, RAM e disco C:, cartões de temperatura, gráfico ao vivo e avisos |
+| **Meu PC** | Ficha técnica: processador, placa de vídeo (com VRAM e versão do driver), memória, placa-mãe, BIOS, discos, monitor e sistema. Detecta mouse, teclado e áudio pelo nome real e permite montar uma lista própria de periféricos |
+| **Processos** | Lista ordenável dos processos que mais usam memória e CPU |
+| **Histórico** | Gráfico de uso ao longo do tempo; ao passar o mouse mostra quais processos pesavam naquele momento |
+| **Disco** | Analisador de pastas para descobrir o que ocupa espaço |
+| **Limpeza** | Remove arquivos temporários, caches de navegador, lixeira, cache do npm e da NVIDIA, com confirmação antes de apagar |
+| **Temperaturas** | Sensores de CPU, GPU, discos e ventoinhas |
+| **Drivers** | Lista de drivers instalados com versão e data |
+| **Sistema** | Mostra o pagefile e permite movê-lo do HDD para o SSD |
+
+**Bandeja do sistema:** ao fechar a janela, o programa continua rodando, coleta o histórico a cada 10 segundos e envia notificações quando:
+
+- a temperatura de CPU ou GPU passa de 85 °C ou a do disco de 60 °C;
+- a RAM passa de 90% ou a CPU fica acima de 90% por tempo prolongado;
+- o disco C: tem menos de 5 GB livres;
+- um processo usa 4 GB de memória ou mais.
+
+## Requisitos
+
+- Windows 10 ou 11
+- Python 3.10 ou superior
+- Para temperaturas: [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) (opcional, veja abaixo)
+
+## Instalação
+
+```
+git clone https://github.com/jhonatascardosodev/pcdriiver.git
+cd pcdriiver
+pip install -r requirements.txt
+py app.py
+```
+
+Ou dê dois cliques em `iniciar.bat`.
+
+## Temperaturas (opcional)
+
+O Windows não expõe temperaturas de forma padrão, então o programa lê os dados do LibreHardwareMonitor:
+
+1. Instale: `winget install LibreHardwareMonitor.LibreHardwareMonitor`
+2. Abra o LibreHardwareMonitor **como administrador**.
+3. No menu **Options**, ative **Remote Web Server** (porta 8085).
+4. Deixe-o aberto. O Monitor PC passa a mostrar os sensores automaticamente.
+
+Sem isso, o restante do programa funciona normalmente; só as temperaturas ficam indisponíveis.
+
+## Permissões de administrador
+
+Rode como administrador apenas para:
+
+- limpar a pasta temporária do Windows;
+- mover o pagefile (exige reiniciar o PC em seguida).
+
+A aba **Sistema** tem o botão "Reiniciar como administrador".
+
+## Dados locais
+
+O programa grava na própria pasta, e estes arquivos não vão para o Git:
+
+- `historico.db`: histórico de uso (SQLite);
+- `perifericos.json`: sua lista de periféricos.
+
+## Estrutura
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app.py` | Janela principal e abas |
+| `ui.py` | Temas e componentes visuais (medidores, gráficos, tabelas) |
+| `meupc.py` | Aba Meu PC e leitura de hardware |
+| `abas_extra.py` | Abas Histórico, Limpeza e Sistema |
+| `historico.py` | Coleta, banco de dados, sensores e alertas |
+| `tray.py` | Ícone da bandeja |
+
+## Limitações
+
+- O nome da placa-mãe aparece como a BIOS informa (às vezes genérico, como "OEM H110").
+- Headset analógico, mousepad e similares não são detectáveis; use a lista manual.
+- Os limites de alerta ficam em `LIMITES`, em `historico.py`.
