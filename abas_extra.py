@@ -1,4 +1,4 @@
-"""Abas extras: Histórico (gráfico), Limpeza de disco e Sistema (pagefile)."""
+"""Abas extras: Histórico (gráfico interativo), Limpeza de disco e Sistema (pagefile)."""
 import ctypes
 import json
 import os
@@ -13,6 +13,7 @@ from tkinter import messagebox, ttk
 import psutil
 
 import historico
+import ui
 
 NOFLAG = 0x08000000
 
@@ -59,6 +60,15 @@ def tamanho_pasta(path):
     return total
 
 
+def titulo(parent, texto, sub=None):
+    f = ttk.Frame(parent)
+    ttk.Label(f, text=texto, font=(ui.FONTE, 13, "bold")).pack(anchor="w")
+    if sub:
+        ttk.Label(f, text=sub, foreground=ui.Tema.p()["mut"], wraplength=760,
+                  justify="left").pack(anchor="w")
+    return f
+
+
 # ======================= Histórico =======================
 PERIODOS = {
     "Última 1 hora": 3600,
@@ -70,36 +80,47 @@ PERIODOS = {
 
 class AbaHistorico(ttk.Frame):
     def __init__(self, master):
-        super().__init__(master, padding=6)
+        super().__init__(master, padding=12)
+        titulo(self, "Histórico", "Passe o mouse sobre o gráfico para ver o que estava consumindo naquele instante.").pack(anchor="w")
         top = ttk.Frame(self)
-        top.pack(fill="x")
+        top.pack(fill="x", pady=(8, 6))
         ttk.Label(top, text="Período:").pack(side="left")
         self.periodo = ttk.Combobox(top, values=list(PERIODOS), state="readonly", width=18)
         self.periodo.current(0)
-        self.periodo.pack(side="left", padx=4)
+        self.periodo.pack(side="left", padx=6)
         self.periodo.bind("<<ComboboxSelected>>", lambda _: self.atualizar())
         ttk.Button(top, text="Atualizar", command=self.atualizar).pack(side="left")
-        self.info = ttk.Label(top, text="")
-        self.info.pack(side="left", padx=8)
+        self.info = ttk.Label(top, text="", foreground=ui.Tema.p()["mut"])
+        self.info.pack(side="left", padx=10)
 
-        self.canvas = tk.Canvas(self, height=230, bg="white", highlightthickness=1,
-                                highlightbackground="#bbb")
-        self.canvas.pack(fill="x", pady=6)
-        self.canvas.bind("<Configure>", lambda _: self.desenhar())
+        card = ui.Cartao(self)
+        card.pack(fill="x", pady=4)
+        self.grafico = ui.Grafico(card, [(1, "CPU", "cpu"), (2, "RAM", "ram")], altura=240, dica=self.dica)
+        self.grafico.pack(fill="x", padx=8, pady=8)
 
-        ttk.Label(self, text="Maiores picos de RAM no período (quem estava consumindo):").pack(anchor="w")
-        frame = ttk.Frame(self)
+        ttk.Label(self, text="Maiores picos de RAM no período (quem estava consumindo)",
+                  font=(ui.FONTE, 10, "bold")).pack(anchor="w", pady=(10, 4))
+        frame, self.tree = ui.criar_tree(
+            self, ("Hora", "RAM %", "CPU %", "Mais RAM", "Mais CPU"), (110, 70, 70, 330, 240), altura=7)
         frame.pack(fill="both", expand=True)
-        cols = ("Hora", "RAM %", "CPU %", "Mais RAM", "Mais CPU")
-        self.tree = ttk.Treeview(frame, columns=cols, show="headings", height=8)
-        for c, w in zip(cols, (110, 60, 60, 300, 220)):
-            self.tree.heading(c, text=c)
-            self.tree.column(c, width=w, anchor="w")
-        sb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
         self.rows = []
+
+    @staticmethod
+    def _top(row):
+        try:
+            return json.loads(row[3])
+        except Exception:
+            return {"ram": [], "cpu": []}
+
+    def dica(self, row):
+        d = row[3] if isinstance(row[3], dict) else {"ram": [], "cpu": []}
+        linhas = [time.strftime("%d/%m %H:%M:%S", time.localtime(row[0])),
+                  f"CPU {row[1]:.0f}%   RAM {row[2]:.0f}%"]
+        if d["ram"]:
+            linhas.append("Mais RAM: " + ", ".join(f"{n} {m} MB" for n, m in d["ram"][:3]))
+        if d["cpu"]:
+            linhas.append("Mais CPU: " + ", ".join(f"{n} {p}%" for n, p in d["cpu"][:3]))
+        return linhas
 
     def atualizar(self):
         seg = PERIODOS[self.periodo.get()]
@@ -107,51 +128,18 @@ class AbaHistorico(ttk.Frame):
             self.rows = historico.consultar(seg)
         except Exception:
             self.rows = []
-        self.desenhar()
+        self.grafico.set_rows([(ts, cpu, ram, self._top((ts, cpu, ram, top)))
+                               for ts, cpu, ram, top in self.rows])
         self.tree.delete(*self.tree.get_children())
         fmt_hora = "%H:%M:%S" if seg <= 86400 else "%d/%m %H:%M"
         for ts, cpu, ram, top in sorted(self.rows, key=lambda r: r[2], reverse=True)[:15]:
-            try:
-                d = json.loads(top)
-            except Exception:
-                d = {"ram": [], "cpu": []}
-            mais_ram = ", ".join(f"{n} {m} MB" for n, m in d["ram"])
-            mais_cpu = ", ".join(f"{n} {p}%" for n, p in d["cpu"])
-            self.tree.insert("", "end", values=(time.strftime(fmt_hora, time.localtime(ts)),
-                                                f"{ram:.0f}", f"{cpu:.0f}", mais_ram, mais_cpu))
+            d = self._top((ts, cpu, ram, top))
+            self.tree.insert("", "end", tags=("heavy",) if ram >= 90 else (),
+                             values=(time.strftime(fmt_hora, time.localtime(ts)), f"{ram:.0f}", f"{cpu:.0f}",
+                                     ", ".join(f"{n} {m} MB" for n, m in d["ram"]),
+                                     ", ".join(f"{n} {p}%" for n, p in d["cpu"])))
+        ui.reordenar(self.tree)
         self.info["text"] = f"{len(self.rows)} amostras"
-
-    def desenhar(self):
-        c = self.canvas
-        c.delete("all")
-        w, h = c.winfo_width(), c.winfo_height()
-        if w < 50:
-            return
-        ml, mr, mt, mb = 40, 10, 22, 22
-        pw, ph = w - ml - mr, h - mt - mb
-        for v in (0, 25, 50, 75, 100):
-            y = mt + ph - ph * v / 100
-            c.create_line(ml, y, w - mr, y, fill="#e5e5e5")
-            c.create_text(ml - 6, y, text=f"{v}%", anchor="e", fill="#666", font=("Segoe UI", 8))
-        c.create_text(ml, 8, text="■ CPU", anchor="w", fill="#1f77b4", font=("Segoe UI", 9, "bold"))
-        c.create_text(ml + 60, 8, text="■ RAM", anchor="w", fill="#e67e22", font=("Segoe UI", 9, "bold"))
-        if len(self.rows) < 2:
-            c.create_text(w / 2, h / 2, fill="#888",
-                          text="Sem dados ainda. Deixe o programa aberto (ou na bandeja) para coletar.")
-            return
-        t0, t1 = self.rows[0][0], self.rows[-1][0]
-        span = max(t1 - t0, 1)
-        passo = max(1, len(self.rows) // (pw * 2 or 1))
-        pts = self.rows[::passo]
-        for idx, cor in ((1, "#1f77b4"), (2, "#e67e22")):
-            coords = []
-            for r in pts:
-                coords += [ml + pw * (r[0] - t0) / span, mt + ph - ph * min(r[idx], 100) / 100]
-            if len(coords) >= 4:
-                c.create_line(*coords, fill=cor, width=2)
-        f = "%H:%M" if (t1 - t0) <= 86400 else "%d/%m %H:%M"
-        c.create_text(ml, h - 8, text=time.strftime(f, time.localtime(t0)), anchor="w", fill="#666", font=("Segoe UI", 8))
-        c.create_text(w - mr, h - 8, text=time.strftime(f, time.localtime(t1)), anchor="e", fill="#666", font=("Segoe UI", 8))
 
 
 # ======================= Limpeza =======================
@@ -171,7 +159,7 @@ def _itens_limpeza():
 
 
 def rodar_limpeza_cmd(tipo, paths):
-    """pnpm/npm têm comando próprio de limpeza. Devolve bytes liberados."""
+    """npm/pnpm têm comando próprio de limpeza. Devolve bytes liberados."""
     exe = shutil.which("pnpm" if tipo == "pnpm" else "npm")
     if not exe:
         return 0
@@ -209,27 +197,35 @@ def esvaziar_pasta(path):
 
 class AbaLimpeza(ttk.Frame):
     def __init__(self, master):
-        super().__init__(master, padding=10)
-        ttk.Label(self, text="Selecione o que limpar. Nada é apagado até você confirmar.").pack(anchor="w")
+        super().__init__(master, padding=12)
+        titulo(self, "Limpeza de disco",
+               "Marque o que limpar. Nada é apagado até você confirmar; arquivos em uso são ignorados.").pack(anchor="w")
         self.itens = _itens_limpeza()
-        self.vars, self.labels = [], []
+        self.vars, self.labels, self.barras = [], [], []
         box = ttk.Frame(self)
         box.pack(fill="x", pady=10)
+        box.columnconfigure(0, weight=1)
         for i, (nome, _, _) in enumerate(self.itens):
             v = tk.BooleanVar(value=(i != 1))  # Windows\Temp desmarcado por padrão
             self.vars.append(v)
-            ttk.Checkbutton(box, text=nome, variable=v).grid(row=i, column=0, sticky="w", pady=2)
-            lb = ttk.Label(box, text="—", width=14, anchor="e")
-            lb.grid(row=i, column=1, padx=10)
+            ttk.Checkbutton(box, text=nome, variable=v).grid(row=i, column=0, sticky="w", pady=5)
+            br = ui.Barra(box, aviso=40, perigo=80, largura=140, fundo="bg")
+            br.grid(row=i, column=1, padx=10)
+            self.barras.append(br)
+            lb = ui.Texto(box, "—", tam=10, negrito=True, fundo="bg")
+            lb.configure(width=10, anchor="e")
+            lb.grid(row=i, column=2)
             self.labels.append(lb)
         btns = ttk.Frame(self)
         btns.pack(anchor="w")
         self.btn_calc = ttk.Button(btns, text="Calcular tamanhos", command=self.calcular)
         self.btn_calc.pack(side="left")
-        self.btn_limpar = ttk.Button(btns, text="Limpar selecionados", command=self.limpar)
-        self.btn_limpar.pack(side="left", padx=6)
-        self.status = ttk.Label(self, text="", justify="left")
-        self.status.pack(anchor="w", pady=10)
+        self.btn_limpar = ttk.Button(btns, text="Limpar selecionados", style="Accent.TButton", command=self.limpar)
+        self.btn_limpar.pack(side="left", padx=8)
+        self.prog = ttk.Progressbar(btns, mode="indeterminate", length=160)
+        self.status = ttk.Label(self, text="", font=(ui.FONTE, 11, "bold"))
+        self.status.pack(anchor="w", pady=12)
+        self.tamanhos = [0] * len(self.itens)
 
     def _tamanho_item(self, i):
         _, paths, tipo = self.itens[i]
@@ -242,9 +238,21 @@ class AbaLimpeza(ttk.Frame):
                 return 0
         return sum(tamanho_pasta(p) for p in paths if p)
 
+    def _ocupado(self, sim, texto=""):
+        if sim:
+            self.prog.pack(side="left", padx=8)
+            self.prog.start(12)
+            self.btn_calc.state(["disabled"])
+            self.btn_limpar.state(["disabled"])
+        else:
+            self.prog.stop()
+            self.prog.pack_forget()
+            self.btn_calc.state(["!disabled"])
+            self.btn_limpar.state(["!disabled"])
+        self.status["text"] = texto
+
     def calcular(self):
-        self.btn_calc.state(["disabled"])
-        self.status["text"] = "Calculando..."
+        self._ocupado(True, "Calculando...")
         threading.Thread(target=self._calcular_worker, daemon=True).start()
 
     def _calcular_worker(self):
@@ -252,11 +260,12 @@ class AbaLimpeza(ttk.Frame):
         self.after(0, self._mostrar, tam)
 
     def _mostrar(self, tam):
-        for lb, t in zip(self.labels, tam):
-            lb["text"] = fmt(t)
         self.tamanhos = tam
-        self.status["text"] = f"Total possível: {fmt(sum(tam))}"
-        self.btn_calc.state(["!disabled"])
+        maior = max(tam) or 1
+        for lb, br, t in zip(self.labels, self.barras, tam):
+            lb["text"] = fmt(t)
+            br.set(100 * t / maior)
+        self._ocupado(False, f"Total possível: {fmt(sum(tam))}")
 
     def limpar(self):
         sel = [i for i, v in enumerate(self.vars) if v.get()]
@@ -265,8 +274,7 @@ class AbaLimpeza(ttk.Frame):
         nomes = "\n".join("• " + self.itens[i][0] for i in sel)
         if not messagebox.askyesno("Confirmar limpeza", f"Vai apagar o conteúdo de:\n\n{nomes}\n\nContinuar?"):
             return
-        self.btn_limpar.state(["disabled"])
-        self.status["text"] = "Limpando..."
+        self._ocupado(True, "Limpando...")
         threading.Thread(target=self._limpar_worker, args=(sel,), daemon=True).start()
 
     def _limpar_worker(self, sel):
@@ -284,36 +292,38 @@ class AbaLimpeza(ttk.Frame):
         self.after(0, self._fim_limpeza, total)
 
     def _fim_limpeza(self, total):
-        self.btn_limpar.state(["!disabled"])
-        self.status["text"] = f"Liberado: {fmt(total)}. (Arquivos em uso foram ignorados.)"
+        self._ocupado(False, f"Liberado: {fmt(total)}. (Arquivos em uso foram ignorados.)")
         self.calcular()
 
 
 # ======================= Sistema (pagefile) =======================
 class AbaSistema(ttk.Frame):
     def __init__(self, master, reiniciar_admin):
-        super().__init__(master, padding=10)
+        super().__init__(master, padding=12)
         self.reiniciar_admin = reiniciar_admin
-        self.txt = tk.Label(self, text="", justify="left", anchor="w", font=("Segoe UI", 10))
-        self.txt.pack(anchor="w", fill="x")
+        titulo(self, "Sistema", "Memória virtual (pagefile) e permissões.").pack(anchor="w")
+        card = ui.Cartao(self)
+        card.pack(fill="x", pady=10)
+        self.txt = ui.Texto(card, "", tam=10)
+        self.txt.configure(justify="left", anchor="w")
+        self.txt.pack(anchor="w", fill="x", padx=14, pady=12)
         btns = ttk.Frame(self)
-        btns.pack(anchor="w", pady=12)
+        btns.pack(anchor="w")
         ttk.Button(btns, text="Atualizar", command=self.atualizar).pack(side="left")
-        ttk.Button(btns, text="Mover pagefile para o SSD (C:)", command=self.mover).pack(side="left", padx=6)
+        ttk.Button(btns, text="Mover pagefile para o SSD (C:)", style="Accent.TButton",
+                   command=self.mover).pack(side="left", padx=8)
         if not is_admin():
             ttk.Button(btns, text="Reiniciar como administrador", command=self.reiniciar_admin).pack(side="left")
-        self.nota = ttk.Label(self, wraplength=700, justify="left", foreground="#555",
-                              text=("O pagefile é a 'memória de reserva' usada quando a RAM aperta. Em HDD ele deixa "
-                                    "o PC lento. Mudar exige administrador e reiniciar o PC. "
-                                    "Libere espaço no C: antes (a aba Limpeza ajuda)."))
-        self.nota.pack(anchor="w", pady=8)
+        ttk.Label(self, wraplength=760, justify="left", foreground=ui.Tema.p()["mut"],
+                  text=("O pagefile é a 'memória de reserva' usada quando a RAM aperta. Em HDD ele deixa "
+                        "o PC lento. Mudar exige administrador e reiniciar o PC. "
+                        "Libere espaço no C: antes (a aba Limpeza ajuda).")).pack(anchor="w", pady=12)
         self.atualizar()
 
     def atualizar(self):
         linhas = [f"Administrador: {'sim' if is_admin() else 'não'}"]
         try:
-            livre = psutil.disk_usage("C:\\").free
-            linhas.append(f"Espaço livre no C: {gb(livre)}")
+            linhas.append(f"Espaço livre no C: {gb(psutil.disk_usage('C:' + chr(92)).free)}")
         except OSError:
             pass
         _, out = ps("Get-CimInstance Win32_PageFileUsage | ForEach-Object { $_.Name + '|' + $_.AllocatedBaseSize + '|' + $_.CurrentUsage }")
@@ -331,7 +341,7 @@ class AbaSistema(ttk.Frame):
             messagebox.showwarning("Precisa de administrador",
                                    "Clique em 'Reiniciar como administrador' e tente de novo.")
             return
-        livre = psutil.disk_usage("C:\\").free
+        livre = psutil.disk_usage("C:" + chr(92)).free
         aviso = ""
         if livre < 12 * 1024**3:
             aviso = f"\n\nATENÇÃO: o C: tem só {gb(livre)} livres. Limpe espaço antes."

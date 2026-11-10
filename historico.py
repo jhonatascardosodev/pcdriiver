@@ -51,9 +51,10 @@ def gravar(cpu, ram):
     return top
 
 
-def ler_temperaturas():
-    """Lê as temperaturas do servidor web da LibreHardwareMonitor.
-    Devolve [(hardware, sensor, graus)]; lista vazia se ela não estiver aberta."""
+def ler_sensores():
+    """Lê o servidor web da LibreHardwareMonitor (http://localhost:8085/data.json).
+    Devolve [(hardware, sensor, grupo, texto, valor)] de temperaturas e ventoinhas;
+    lista vazia se ela não estiver aberta."""
     import urllib.request
     try:
         with urllib.request.urlopen("http://localhost:8085/data.json", timeout=2) as r:
@@ -61,22 +62,32 @@ def ler_temperaturas():
     except Exception:
         return []
     achados = []
+    grupos = {"Temperatures": "Temperatura", "Fans": "Ventoinha"}
 
     def andar(no, hardware):
         filhos = no.get("Children", [])
-        if no.get("Text") == "Temperatures":
+        grupo = grupos.get(no.get("Text"))
+        if grupo:
             for f in filhos:
-                try:
-                    graus = float(f.get("Value", "").split()[0].replace(",", "."))
-                except (ValueError, IndexError):
+                texto = f.get("Value", "")
+                if not texto:
                     continue
-                achados.append((hardware, f.get("Text", ""), graus))
+                try:
+                    valor = float(texto.split()[0].replace(",", "."))
+                except (ValueError, IndexError):
+                    valor = None
+                achados.append((hardware, f.get("Text", ""), grupo, texto, valor))
             return
         for f in filhos:
             andar(f, no.get("Text", "") if f.get("Children") else hardware)
 
     andar(raiz, "")
     return achados
+
+
+def ler_temperaturas():
+    """[(hardware, sensor, graus)] só de temperaturas."""
+    return [(h, s, v) for h, s, g, _, v in ler_sensores() if g == "Temperatura" and v is not None]
 
 
 def limpar_antigos(dias=7):

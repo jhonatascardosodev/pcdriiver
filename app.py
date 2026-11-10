@@ -1,18 +1,20 @@
-"""Monitor PC - versão básica de teste.
-Abas: Resumo, Processos, Disco, Temperaturas, Drivers.
-"""
+"""Monitor PC - painel de desempenho, histórico, limpeza e diagnóstico para Windows."""
 import json
 import os
+import socket
 import subprocess
 import threading
+import time
 import tkinter as tk
-from collections import defaultdict
-from tkinter import filedialog, ttk
+from collections import defaultdict, deque
+from tkinter import filedialog, messagebox, ttk
 
 import psutil
 
 import abas_extra
 import historico
+import meupc
+import ui
 
 try:
     import tray
@@ -23,11 +25,8 @@ NOFLAG = 0x08000000  # CREATE_NO_WINDOW
 
 
 def ps(cmd, timeout=120):
-    """Roda um comando PowerShell e devolve o texto."""
-    r = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", cmd],
-        capture_output=True, text=True, timeout=timeout, creationflags=NOFLAG,
-    )
+    r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
+                       capture_output=True, text=True, timeout=timeout, creationflags=NOFLAG)
     return r.stdout.strip()
 
 
@@ -39,38 +38,68 @@ def mb(n):
     return f"{n / 1024**2:.0f} MB"
 
 
-def make_tree(parent, cols, widths):
-    frame = ttk.Frame(parent)
-    tree = ttk.Treeview(frame, columns=cols, show="headings")
-    for c, w in zip(cols, widths):
-        tree.heading(c, text=c)
-        tree.column(c, width=w, anchor="w")
-    sb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
-    tree.configure(yscrollcommand=sb.set)
-    tree.pack(side="left", fill="both", expand=True)
-    sb.pack(side="right", fill="y")
-    return frame, tree
+def duracao(seg):
+    seg = int(seg)
+    d, r = divmod(seg, 86400)
+    h, r = divmod(r, 3600)
+    m, _ = divmod(r, 60)
+    return (f"{d}d " if d else "") + f"{h:02d}h {m:02d}min"
+
+
+class CartaoTemp(tk.Frame):
+    """Cartão de temperatura: nome, valor grande e barra colorida."""
+
+    def __init__(self, parent, titulo, sub, aviso, perigo):
+        super().__init__(parent, bd=0, highlightthickness=1)
+        self._estilo = ("card", None)
+        self._borda = True
+        self.aviso, self.perigo = aviso, perigo
+        p = ui.Tema.p()
+        self.configure(bg=p["card"], highlightbackground=p["grid"])
+        ui.Texto(self, titulo, 10, True).pack(anchor="w", padx=12, pady=(10, 0))
+        ui.Texto(self, sub, 8, cor="mut").pack(anchor="w", padx=12)
+        self.valor = ui.Texto(self, "—", 24, True)
+        self.valor.pack(anchor="w", padx=12)
+        self.barra = ui.Barra(self, aviso=aviso, perigo=perigo, largura=120)
+        self.barra.pack(fill="x", padx=12, pady=(2, 12))
+
+    def set(self, graus):
+        self.valor.configure(text=f"{graus:.0f} °C", fg=ui.cor_nivel(graus, self.aviso, self.perigo))
+        self.barra.set(graus)
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Monitor PC")
-        self.geometry("820x560")
-        nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True, padx=6, pady=6)
-        self.nb = nb
+        self.geometry("1180x780")
+        self.minsize(960, 680)
+        ui.aplicar_tema(self, "dark")
 
-        self.build_resumo(nb)
-        self.build_processos(nb)
-        self.aba_hist = abas_extra.AbaHistorico(nb)
-        nb.add(self.aba_hist, text="Histórico")
-        self.build_disco(nb)
-        nb.add(abas_extra.AbaLimpeza(nb), text="Limpeza")
-        self.build_temps(nb)
-        self.build_drivers(nb)
-        nb.add(abas_extra.AbaSistema(nb, self.reiniciar_admin), text="Sistema")
-        nb.bind("<<NotebookTabChanged>>", self.on_tab)
+        self.sensores = []
+        self.live = deque(maxlen=120)
+        self.n = 0
+        self.cards_temp = {}
+        self._mut = []
+        self._fim = False
+        self.proc_data = []
+
+        self.build_cabecalho()
+        self.nb = ttk.Notebook(self)
+        self.nb.pack(fill="both", expand=True, padx=12, pady=(8, 0))
+        self.build_resumo()
+        self.aba_meupc = meupc.AbaMeuPC(self.nb)
+        self.nb.add(self.aba_meupc, text="Meu PC")
+        self.build_processos()
+        self.aba_hist = abas_extra.AbaHistorico(self.nb)
+        self.nb.add(self.aba_hist, text="Histórico")
+        self.build_disco()
+        self.nb.add(abas_extra.AbaLimpeza(self.nb), text="Limpeza")
+        self.build_temps()
+        self.build_drivers()
+        self.nb.add(abas_extra.AbaSistema(self.nb, self.reiniciar_admin), text="Sistema")
+        self.nb.bind("<<NotebookTabChanged>>", self.on_tab)
+        self.build_status()
 
         # coleta de histórico + bandeja
         self.icon = None
@@ -83,15 +112,45 @@ class App(tk.Tk):
                 self.icon = None
         self.coletor = historico.Coletor(self.alerta)
         self.coletor.start()
+        threading.Thread(target=self._poll_sensores, daemon=True).start()
         self.protocol("WM_DELETE_WINDOW", self.fechar)
 
-        psutil.cpu_percent()  # primeira leitura
+        ui.restilizar(self)
+        psutil.cpu_percent()
         self.tick()
 
-    # ---------- Bandeja / ciclo de vida ----------
+    # ---------- cabeçalho / rodapé ----------
+    def build_cabecalho(self):
+        h = ttk.Frame(self, padding=(16, 12, 16, 0))
+        h.pack(fill="x")
+        ttk.Label(h, text="Monitor PC", font=(ui.FONTE, 20, "bold")).pack(side="left")
+        papel = "Administrador" if abas_extra.is_admin() else "Usuário padrão"
+        sub = ttk.Label(h, text=f"   {socket.gethostname()}  •  {papel}", foreground=ui.Tema.p()["mut"])
+        sub.pack(side="left", pady=(8, 0))
+        self._mut.append(sub)
+        self.btn_tema = ttk.Button(h, text="☀  Tema claro", command=self.alternar_tema)
+        self.btn_tema.pack(side="right")
+
+    def build_status(self):
+        self.status = ttk.Label(self, text="", foreground=ui.Tema.p()["mut"], padding=(16, 4))
+        self.status.pack(fill="x", side="bottom")
+        self._mut.append(self.status)
+
+    def alternar_tema(self):
+        novo = "light" if ui.Tema.nome == "dark" else "dark"
+        ui.aplicar_tema(self, novo)
+        self.btn_tema["text"] = "☾  Tema escuro" if novo == "light" else "☀  Tema claro"
+        for w in self._mut:
+            w.configure(foreground=ui.Tema.p()["mut"])
+
+    # ---------- bandeja / ciclo de vida ----------
     def on_tab(self, _):
-        if self.nb.select() == str(self.aba_hist):
+        if self.nb.select() == str(self.aba_meupc) and not self.aba_meupc.carregada:
+            self.aba_meupc.carregar()
+        elif self.nb.select() == str(self.aba_hist):
             self.aba_hist.atualizar()
+        elif self.nb.select() == str(self.f_temps):
+            self.render_temps()
 
     def alerta(self, titulo, msg):
         if self.icon:
@@ -111,6 +170,7 @@ class App(tk.Tk):
             self.sair()
 
     def sair(self):
+        self._fim = True
         self.coletor.parar()
         if self.icon:
             self.icon.stop()
@@ -120,164 +180,303 @@ class App(tk.Tk):
         abas_extra.relancar_como_admin()
         self.sair()
 
-    # ---------- Resumo ----------
-    def build_resumo(self, nb):
-        f = ttk.Frame(nb, padding=10)
-        nb.add(f, text="Resumo")
-        self.bars = {}
-        for name in ("CPU", "RAM"):
-            ttk.Label(f, text=name).pack(anchor="w")
-            pb = ttk.Progressbar(f, maximum=100, length=500)
-            pb.pack(anchor="w", pady=(0, 2))
-            lb = ttk.Label(f, text="")
-            lb.pack(anchor="w", pady=(0, 10))
-            self.bars[name] = (pb, lb)
-        ttk.Label(f, text="Discos").pack(anchor="w")
-        self.disk_box = ttk.Frame(f)
-        self.disk_box.pack(anchor="w", fill="x")
-        self.alert_lbl = ttk.Label(f, text="", foreground="#b00020", justify="left")
-        self.alert_lbl.pack(anchor="w", pady=15)
+    def _poll_sensores(self):
+        while not self._fim:
+            self.sensores = historico.ler_sensores()
+            for _ in range(50):
+                if self._fim:
+                    return
+                time.sleep(0.1)
 
-    def update_resumo(self):
+    # ---------- Resumo ----------
+    def _medidor(self, parent, titulo):
+        c = ui.Cartao(parent)
+        c.pack(side="left", padx=(0, 12))
+        m = ui.Medidor(c, titulo)
+        m.pack(padx=10, pady=8)
+        return m
+
+    def build_resumo(self):
+        f = ttk.Frame(self.nb, padding=12)
+        self.nb.add(f, text="Resumo")
+        linha = ttk.Frame(f)
+        linha.pack(fill="x")
+        self.m_cpu = self._medidor(linha, "CPU")
+        self.m_ram = self._medidor(linha, "Memória RAM")
+        self.m_disco = self._medidor(linha, "Disco C:")
+        c = ui.Cartao(linha)
+        c.pack(side="left", fill="both", expand=True)
+        ui.Texto(c, "Sistema", 12, True).pack(anchor="w", padx=16, pady=(14, 6))
+        self.lb_sis = ui.Texto(c, "", 10, cor="mut")
+        self.lb_sis.configure(justify="left")
+        self.lb_sis.pack(anchor="w", padx=16)
+
+        self.temp_box = ttk.Frame(f)
+        self.temp_box.pack(fill="x", pady=(12, 0))
+        self.temp_aviso = ui.Cartao(self.temp_box)
+        self.temp_aviso.pack(fill="x")
+        ui.Texto(self.temp_aviso,
+                 "Temperaturas: abra a LibreHardwareMonitor como administrador e ligue "
+                 "Options > Remote Web Server > Run para ver CPU, GPU e discos aqui.",
+                 9, cor="mut").pack(anchor="w", padx=14, pady=12)
+
+        cg = ui.Cartao(f)
+        cg.pack(fill="both", expand=True, pady=(12, 0))
+        ui.Texto(cg, "CPU e RAM — últimos 2 minutos (passe o mouse)", 10, True).pack(anchor="w", padx=14, pady=(10, 0))
+        self.g_live = ui.Grafico(cg, [(1, "CPU", "cpu"), (2, "RAM", "ram")], altura=150)
+        self.g_live.pack(fill="both", expand=True, padx=8, pady=8)
+
+        baixo = ttk.Frame(f)
+        baixo.pack(fill="x", pady=(12, 0))
+        cd = ui.Cartao(baixo)
+        cd.pack(side="left", fill="both", expand=True, padx=(0, 12))
+        ui.Texto(cd, "Discos", 10, True).pack(anchor="w", padx=14, pady=(10, 4))
+        self.box_discos = tk.Frame(cd)
+        self.box_discos._estilo = ("card", None)
+        self.box_discos.configure(bg=ui.Tema.p()["card"])
+        self.box_discos.pack(fill="x", padx=14, pady=(0, 10))
+        self.linhas_disco = {}
+        ca = ui.Cartao(baixo)
+        ca.pack(side="left", fill="both", expand=True)
+        ui.Texto(ca, "Avisos", 10, True).pack(anchor="w", padx=14, pady=(10, 4))
+        self.lb_avisos = ui.Texto(ca, "", 10)
+        self.lb_avisos.configure(justify="left", anchor="w")
+        self.lb_avisos.pack(anchor="w", padx=14, pady=(0, 10))
+
+    def atualizar_resumo(self):
+        p = ui.Tema.p()
         cpu = psutil.cpu_percent()
         vm = psutil.virtual_memory()
-        pb, lb = self.bars["CPU"]
-        pb["value"] = cpu
-        lb["text"] = f"{cpu:.0f}%"
-        pb, lb = self.bars["RAM"]
-        pb["value"] = vm.percent
-        lb["text"] = f"{vm.percent:.0f}%  ({gb(vm.used)} de {gb(vm.total)})"
+        self.m_cpu.set(cpu, f"{psutil.cpu_count()} threads")
+        self.m_ram.set(vm.percent, f"{gb(vm.used)} de {gb(vm.total)}")
+        avisos = []
+        try:
+            du = psutil.disk_usage("C:" + chr(92))
+            self.m_disco.set(du.percent, f"livre {gb(du.free)}")
+            if du.percent > 90:
+                avisos.append((f"C: quase cheio (livre {gb(du.free)})", "bad"))
+        except OSError:
+            pass
+        if vm.percent > 85:
+            avisos.append(("RAM acima de 85%. Feche programas pesados.", "warn"))
+        if cpu > 90:
+            avisos.append(("CPU acima de 90%.", "warn"))
+        for nome, graus, lim in self.temps_atuais():
+            if graus >= lim:
+                avisos.append((f"{nome} quente: {graus:.0f} °C", "bad"))
+        self.live.append((time.time(), cpu, vm.percent, None))
+        self.g_live.set_rows(list(self.live))
 
-        for w in self.disk_box.winfo_children():
-            w.destroy()
-        alerts = []
-        for p in psutil.disk_partitions():
-            if "cdrom" in p.opts or not p.fstype:
+        self.lb_sis["text"] = (f"Ligado há {duracao(time.time() - psutil.boot_time())}\n"
+                               f"Processos: {len(psutil.pids())}\n"
+                               f"RAM livre: {gb(vm.available)}")
+        if avisos:
+            self.lb_avisos.configure(text="\n".join("⚠  " + t for t, _ in avisos),
+                                     fg=p["bad"] if any(k == "bad" for _, k in avisos) else p["warn"])
+        else:
+            self.lb_avisos.configure(text="✓  Tudo certo por aqui", fg=p["ok"])
+        if self.n % 5 == 0:
+            self.atualizar_discos()
+        self.atualizar_cards_temp()
+
+    def atualizar_discos(self):
+        for part in psutil.disk_partitions():
+            if "cdrom" in part.opts or not part.fstype:
                 continue
             try:
-                u = psutil.disk_usage(p.mountpoint)
+                u = psutil.disk_usage(part.mountpoint)
             except OSError:
                 continue
-            row = ttk.Frame(self.disk_box)
-            row.pack(anchor="w", pady=2)
-            ttk.Label(row, text=f"{p.device}", width=6).pack(side="left")
-            pbar = ttk.Progressbar(row, maximum=100, length=300, value=u.percent)
-            pbar.pack(side="left")
-            ttk.Label(row, text=f"  {u.percent:.0f}% usado - livre {gb(u.free)} de {gb(u.total)}").pack(side="left")
-            if u.percent > 90:
-                alerts.append(f"⚠ {p.device} com pouco espaço livre ({gb(u.free)}).")
-        if vm.percent > 85:
-            alerts.append("⚠ RAM acima de 85%. Feche programas pesados.")
-        if cpu > 90:
-            alerts.append("⚠ CPU acima de 90%.")
-        self.alert_lbl["text"] = "\n".join(alerts)
+            if part.device not in self.linhas_disco:
+                r = len(self.linhas_disco)
+                a = ui.Texto(self.box_discos, part.device.rstrip("\\"), 10, True)
+                a.grid(row=r, column=0, sticky="w", pady=3)
+                b = ui.Barra(self.box_discos, largura=180)
+                b.grid(row=r, column=1, padx=10)
+                c = ui.Texto(self.box_discos, "", 9, cor="mut")
+                c.grid(row=r, column=2, sticky="w")
+                self.linhas_disco[part.device] = (b, c)
+            b, c = self.linhas_disco[part.device]
+            b.set(u.percent)
+            c["text"] = f"{u.percent:.0f}% usado • livre {gb(u.free)} de {gb(u.total)}"
+
+    # ---------- temperaturas (cartões do Resumo) ----------
+    def temps_atuais(self):
+        """[(nome, graus, limite de alerta)] a partir da LibreHardwareMonitor."""
+        res = []
+        for h, s, g, _, v in self.sensores:
+            if g != "Temperatura" or v is None:
+                continue
+            if s == "CPU Package":
+                res.append(("CPU", v, 85))
+            elif s == "GPU Core":
+                res.append(("GPU", v, 85))
+            elif s == "Temperature":
+                res.append((f"Disco {h.strip()}", v, 60))
+        return res
+
+    def atualizar_cards_temp(self):
+        atuais = self.temps_atuais()
+        if not atuais:
+            if self.cards_temp:
+                for c in self.cards_temp.values():
+                    c.destroy()
+                self.cards_temp = {}
+            if not self.temp_aviso.winfo_ismapped():
+                self.temp_aviso.pack(fill="x")
+            return
+        if self.temp_aviso.winfo_ismapped():
+            self.temp_aviso.pack_forget()
+        if set(self.cards_temp) != {n for n, _, _ in atuais}:
+            for c in self.cards_temp.values():
+                c.destroy()
+            self.cards_temp = {}
+            for nome, _, lim in atuais:
+                disco = nome.startswith("Disco")
+                card = CartaoTemp(self.temp_box, nome.split(" ")[0] if not disco else "Disco",
+                                  nome[6:] if disco else "temperatura", 45 if disco else 65, lim if not disco else 55)
+                card.pack(side="left", fill="x", expand=True, padx=(0, 10))
+                self.cards_temp[nome] = card
+        for nome, graus, _ in atuais:
+            if nome in self.cards_temp:
+                self.cards_temp[nome].set(graus)
 
     # ---------- Processos ----------
-    def build_processos(self, nb):
-        f = ttk.Frame(nb, padding=6)
-        nb.add(f, text="Processos")
-        top = ttk.Frame(f)
-        top.pack(fill="x")
-        ttk.Label(top, text="Agrupado por programa (soma de todos os processos). Atualiza a cada 3s.").pack(side="left")
-        ttk.Button(top, text="Encerrar selecionado", command=self.kill_selected).pack(side="right")
-        frame, self.proc_tree = make_tree(f, ("Programa", "RAM", "CPU %", "Processos"), (280, 110, 90, 90))
-        frame.pack(fill="both", expand=True, pady=6)
-        self.proc_ticks = 0
+    def build_processos(self):
+        f = ttk.Frame(self.nb, padding=12)
+        self.nb.add(f, text="Processos")
+        topo = ttk.Frame(f)
+        topo.pack(fill="x")
+        ttk.Label(topo, text="Buscar:").pack(side="left")
+        self.proc_filtro = tk.StringVar()
+        self.proc_filtro.trace_add("write", lambda *_: self.render_procs())
+        ttk.Entry(topo, textvariable=self.proc_filtro, width=28).pack(side="left", padx=6)
+        ttk.Button(topo, text="Encerrar selecionado", command=self.kill_selected).pack(side="right")
+        dica = ttk.Label(f, text="Soma de todos os processos de cada programa. Clique no cabeçalho para ordenar; "
+                                 "clique com o botão direito para encerrar. Vermelho = mais de 1 GB.",
+                         foreground=ui.Tema.p()["mut"])
+        dica.pack(anchor="w", pady=(6, 4))
+        self._mut.append(dica)
+        frame, self.proc_tree = ui.criar_tree(f, ("Programa", "RAM", "CPU %", "Processos"), (320, 120, 90, 100))
+        frame.pack(fill="both", expand=True)
+        self.proc_tree._ordem = ("RAM", True)
+        self.menu_proc = tk.Menu(self, tearoff=0)
+        self.menu_proc.add_command(label="Encerrar todos os processos deste programa", command=self.kill_selected)
+        self.proc_tree.bind("<Button-3>", self._menu_proc)
 
-    def update_procs(self):
-        groups = defaultdict(lambda: [0, 0.0, 0])
+    def _menu_proc(self, e):
+        iid = self.proc_tree.identify_row(e.y)
+        if iid:
+            self.proc_tree.selection_set(iid)
+            self.menu_proc.tk_popup(e.x_root, e.y_root)
+
+    def coletar_procs(self):
+        grupos = defaultdict(lambda: [0, 0.0, 0])
         for p in psutil.process_iter(["name", "memory_info", "cpu_percent"]):
             try:
-                g = groups[p.info["name"] or "?"]
+                g = grupos[p.info["name"] or "?"]
                 g[0] += p.info["memory_info"].rss
                 g[1] += p.info["cpu_percent"] or 0
                 g[2] += 1
             except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
                 pass
-        rows = sorted(groups.items(), key=lambda kv: kv[1][0], reverse=True)[:40]
-        sel = self.proc_tree.selection()
-        keep = self.proc_tree.item(sel[0])["values"][0] if sel else None
-        self.proc_tree.delete(*self.proc_tree.get_children())
-        for name, (mem, cpu, n) in rows:
-            iid = self.proc_tree.insert("", "end", values=(name, mb(mem), f"{cpu / psutil.cpu_count():.1f}", n))
-            if name == keep:
-                self.proc_tree.selection_set(iid)
+        nc = psutil.cpu_count() or 1
+        self.proc_data = sorted(((n, m, c / nc, k) for n, (m, c, k) in grupos.items()),
+                                key=lambda x: x[1], reverse=True)
+        self.render_procs()
+
+    def render_procs(self):
+        t = self.proc_tree
+        filtro = self.proc_filtro.get().strip().lower()
+        sel = t.selection()
+        manter = t.item(sel[0])["values"][0] if sel else None
+        t.delete(*t.get_children())
+        n = 0
+        for nome, mem, cpu, cont in self.proc_data:
+            if filtro and filtro not in nome.lower():
+                continue
+            iid = t.insert("", "end", values=(nome, mb(mem), f"{cpu:.1f}", cont),
+                           tags=("heavy",) if mem >= 1024**3 else ())
+            if str(nome) == str(manter):
+                t.selection_set(iid)
+            n += 1
+            if n >= 80:
+                break
+        ui.reordenar(t)
 
     def kill_selected(self):
         sel = self.proc_tree.selection()
         if not sel:
             return
-        name = self.proc_tree.item(sel[0])["values"][0]
-        from tkinter import messagebox
-        if not messagebox.askyesno("Confirmar", f"Encerrar TODOS os processos '{name}'?"):
+        nome = str(self.proc_tree.item(sel[0])["values"][0])
+        if not messagebox.askyesno("Confirmar", f"Encerrar TODOS os processos '{nome}'?"):
             return
         for p in psutil.process_iter(["name"]):
-            if p.info["name"] == name:
+            if p.info["name"] == nome:
                 try:
                     p.terminate()
                 except Exception:
                     pass
 
     # ---------- Disco ----------
-    def build_disco(self, nb):
-        f = ttk.Frame(nb, padding=6)
-        nb.add(f, text="Disco")
+    def build_disco(self):
+        f = ttk.Frame(self.nb, padding=12)
+        self.nb.add(f, text="Disco")
+        ttk.Label(f, text="Analisador de pastas", font=(ui.FONTE, 13, "bold")).pack(anchor="w")
+        sub = ttk.Label(f, text="Mostra as maiores subpastas e arquivos. Só lê, não apaga nada. "
+                                "Dois cliques em uma linha abrem a pasta no Explorer.",
+                        foreground=ui.Tema.p()["mut"])
+        sub.pack(anchor="w", pady=(0, 8))
+        self._mut.append(sub)
         top = ttk.Frame(f)
         top.pack(fill="x")
         self.scan_path = tk.StringVar(value=os.path.expanduser("~"))
-        ttk.Entry(top, textvariable=self.scan_path, width=50).pack(side="left")
+        ttk.Entry(top, textvariable=self.scan_path, width=52).pack(side="left")
         ttk.Button(top, text="Escolher...", command=lambda: self.scan_path.set(
-            filedialog.askdirectory() or self.scan_path.get())).pack(side="left", padx=4)
-        self.scan_btn = ttk.Button(top, text="Analisar", command=self.start_scan)
+            filedialog.askdirectory() or self.scan_path.get())).pack(side="left", padx=6)
+        self.scan_btn = ttk.Button(top, text="Analisar", style="Accent.TButton", command=self.start_scan)
         self.scan_btn.pack(side="left")
-        self.scan_lbl = ttk.Label(f, text="Mostra as maiores subpastas (só lê, não apaga nada).")
-        self.scan_lbl.pack(anchor="w", pady=4)
-        frame, self.disk_tree = make_tree(f, ("Pasta", "Tamanho"), (600, 120))
-        frame.pack(fill="both", expand=True)
+        self.scan_prog = ttk.Progressbar(top, mode="indeterminate", length=120)
+        atalhos = ttk.Frame(f)
+        atalhos.pack(fill="x", pady=8)
+        ttk.Label(atalhos, text="Atalhos:").pack(side="left")
+        for nome, caminho in (("Usuário", os.path.expanduser("~")),
+                              ("AppData", os.path.join(os.path.expanduser("~"), "AppData")),
+                              ("C:\\", "C:" + chr(92)),
+                              ("Steam", r"C:\Program Files (x86)\Steam"),
+                              ("Program Files", r"C:\Program Files")):
+            ttk.Button(atalhos, text=nome, command=lambda c=caminho: self.scan_path.set(c)).pack(side="left", padx=3)
+        self.scan_lbl = ttk.Label(f, text="", foreground=ui.Tema.p()["mut"])
+        self.scan_lbl.pack(anchor="w")
+        self._mut.append(self.scan_lbl)
+        frame, self.disk_tree = ui.criar_tree(f, ("Pasta", "Tamanho", "Proporção"), (560, 110, 220))
+        frame.pack(fill="both", expand=True, pady=(4, 0))
         self.disk_tree.bind("<Double-1>", self.open_folder)
 
     def open_folder(self, _):
         sel = self.disk_tree.selection()
         if sel:
-            os.startfile(self.disk_tree.item(sel[0])["values"][0])
+            caminho = self.disk_tree.item(sel[0])["values"][0]
+            os.startfile(caminho if os.path.isdir(caminho) else os.path.dirname(caminho))
 
     def start_scan(self):
         self.scan_btn.state(["disabled"])
+        self.scan_prog.pack(side="left", padx=10)
+        self.scan_prog.start(12)
         self.scan_lbl["text"] = "Analisando... pode levar alguns minutos."
         self.disk_tree.delete(*self.disk_tree.get_children())
         threading.Thread(target=self.scan, args=(self.scan_path.get(),), daemon=True).start()
 
-    @staticmethod
-    def folder_size(path):
-        total = 0
-        stack = [path]
-        while stack:
-            try:
-                with os.scandir(stack.pop()) as it:
-                    for e in it:
-                        try:
-                            if e.is_symlink():
-                                continue
-                            if e.is_dir(follow_symlinks=False):
-                                stack.append(e.path)
-                            else:
-                                total += e.stat(follow_symlinks=False).st_size
-                        except OSError:
-                            pass
-            except OSError:
-                pass
-        return total
-
-    def scan(self, root):
+    def scan(self, raiz):
         res = []
         try:
-            with os.scandir(root) as it:
+            with os.scandir(raiz) as it:
                 for e in it:
                     try:
                         if e.is_symlink():
                             continue
                         if e.is_dir(follow_symlinks=False):
-                            res.append((e.path, self.folder_size(e.path)))
+                            res.append((e.path, abas_extra.tamanho_pasta(e.path)))
                         else:
                             res.append((e.path, e.stat().st_size))
                     except OSError:
@@ -285,108 +484,127 @@ class App(tk.Tk):
         except OSError:
             pass
         res.sort(key=lambda x: x[1], reverse=True)
-        self.after(0, self.show_scan, res[:60])
+        self.after(0, self.show_scan, res[:80])
 
     def show_scan(self, res):
-        for p, s in res:
-            self.disk_tree.insert("", "end", values=(p, gb(s) if s > 1024**3 else mb(s)))
-        self.scan_lbl["text"] = "Pronto. Clique duas vezes numa linha para abrir a pasta."
+        maior = res[0][1] if res and res[0][1] else 1
+        for caminho, tam in res:
+            barra = "█" * max(1, round(22 * tam / maior)) if tam else ""
+            self.disk_tree.insert("", "end", values=(caminho, abas_extra.fmt(tam), barra),
+                                  tags=("heavy",) if tam >= 10 * 1024**3 else ())
+        self.disk_tree._ordem = ("Tamanho", True)
+        ui.reordenar(self.disk_tree)
+        total = sum(t for _, t in res)
+        self.scan_lbl["text"] = f"Pronto. {len(res)} itens, total {abas_extra.fmt(total)}. Vermelho = mais de 10 GB."
+        self.scan_prog.stop()
+        self.scan_prog.pack_forget()
         self.scan_btn.state(["!disabled"])
 
-    # ---------- Temperaturas ----------
-    def build_temps(self, nb):
-        f = ttk.Frame(nb, padding=6)
-        nb.add(f, text="Temperaturas")
+    # ---------- Temperaturas (tabela completa) ----------
+    def build_temps(self):
+        f = ttk.Frame(self.nb, padding=12)
+        self.f_temps = f
+        self.nb.add(f, text="Temperaturas")
+        ttk.Label(f, text="Sensores", font=(ui.FONTE, 13, "bold")).pack(anchor="w")
         top = ttk.Frame(f)
-        top.pack(fill="x")
-        ttk.Button(top, text="Ler agora", command=self.read_temps).pack(side="left")
-        self.temp_lbl = ttk.Label(top, text="  Precisa da LibreHardwareMonitor aberta (administrador) com o Remote Web Server ligado.")
-        self.temp_lbl.pack(side="left")
-        frame, self.temp_tree = make_tree(f, ("Sensor", "Tipo", "Valor"), (360, 120, 120))
-        frame.pack(fill="both", expand=True, pady=6)
+        top.pack(fill="x", pady=(6, 6))
+        ttk.Label(top, text="Buscar:").pack(side="left")
+        self.temp_filtro = tk.StringVar()
+        self.temp_filtro.trace_add("write", lambda *_: self.render_temps())
+        ttk.Entry(top, textvariable=self.temp_filtro, width=24).pack(side="left", padx=6)
+        self.temp_lbl = ttk.Label(top, text="", foreground=ui.Tema.p()["mut"])
+        self.temp_lbl.pack(side="left", padx=8)
+        self._mut.append(self.temp_lbl)
+        frame, self.temp_tree = ui.criar_tree(f, ("Hardware", "Sensor", "Tipo", "Valor"), (260, 260, 110, 110))
+        frame.pack(fill="both", expand=True)
 
-    def read_temps(self):
-        self.temp_tree.delete(*self.temp_tree.get_children())
-        self.temp_lbl["text"] = "  Lendo..."
-        threading.Thread(target=self._temps_worker, daemon=True).start()
-
-    def _temps_worker(self):
-        """Lê o servidor web da LibreHardwareMonitor (http://localhost:8085/data.json)."""
-        import urllib.request
-        try:
-            with urllib.request.urlopen("http://localhost:8085/data.json", timeout=4) as r:
-                raiz = json.loads(r.read().decode("utf-8"))
-        except Exception:
-            self.after(0, self.show_temps, [])
-            return
-        grupos = {"Temperatures": "Temperatura", "Fans": "Ventoinha"}
-        achados = []
-
-        def andar(no, hardware):
-            nome = no.get("Text", "")
-            filhos = no.get("Children", [])
-            if nome in grupos:
-                for f in filhos:
-                    if f.get("Value"):
-                        achados.append((f"{hardware} - {f.get('Text', '')}", grupos[nome], f["Value"]))
-                return
-            for f in filhos:
-                andar(f, nome if filhos and f.get("Children") else hardware)
-
-        andar(raiz, "")
-        self.after(0, self.show_temps, achados)
-
-    def show_temps(self, data):
-        if not data:
-            self.temp_lbl["text"] = ("  Sem dados. Abra a LibreHardwareMonitor como administrador e ligue "
+    def render_temps(self):
+        sens = self.sensores
+        t = self.temp_tree
+        t.delete(*t.get_children())
+        if not sens:
+            self.temp_lbl["text"] = ("Sem dados. Abra a LibreHardwareMonitor como administrador e ligue "
                                      "Options > Remote Web Server > Run.")
             return
-        for linha in data:
-            self.temp_tree.insert("", "end", values=linha)
-        self.temp_lbl["text"] = f"  {len(data)} sensores."
+        filtro = self.temp_filtro.get().strip().lower()
+        for h, s, g, txt, v in sens:
+            if filtro and filtro not in f"{h} {s} {g}".lower():
+                continue
+            tag = ()
+            if g == "Temperatura" and v is not None:
+                tag = ("heavy",) if v >= 85 else ("warn",) if v >= 70 else ()
+            t.insert("", "end", values=(h, s, g, txt), tags=tag)
+        ui.reordenar(t)
+        self.temp_lbl["text"] = "Atualiza sozinho a cada poucos segundos. Amarelo ≥ 70 °C, vermelho ≥ 85 °C."
 
     # ---------- Drivers ----------
-    def build_drivers(self, nb):
-        f = ttk.Frame(nb, padding=6)
-        nb.add(f, text="Drivers")
+    def build_drivers(self):
+        f = ttk.Frame(self.nb, padding=12)
+        self.nb.add(f, text="Drivers")
+        ttk.Label(f, text="Drivers instalados", font=(ui.FONTE, 13, "bold")).pack(anchor="w")
         top = ttk.Frame(f)
-        top.pack(fill="x")
-        ttk.Button(top, text="Listar drivers", command=self.list_drivers).pack(side="left")
-        ttk.Button(top, text="Abrir Windows Update", command=lambda: os.startfile("ms-settings:windowsupdate")).pack(side="left", padx=4)
-        self.drv_lbl = ttk.Label(top, text="  Mostra os mais antigos primeiro.")
-        self.drv_lbl.pack(side="left")
-        frame, self.drv_tree = make_tree(f, ("Dispositivo", "Fabricante", "Versão", "Data"), (300, 200, 130, 100))
-        frame.pack(fill="both", expand=True, pady=6)
+        top.pack(fill="x", pady=(6, 6))
+        ttk.Button(top, text="Listar drivers", style="Accent.TButton", command=self.list_drivers).pack(side="left")
+        ttk.Button(top, text="Abrir Windows Update",
+                   command=lambda: os.startfile("ms-settings:windowsupdate")).pack(side="left", padx=6)
+        ttk.Label(top, text="Buscar:").pack(side="left", padx=(12, 0))
+        self.drv_filtro = tk.StringVar()
+        self.drv_filtro.trace_add("write", lambda *_: self.render_drivers())
+        ttk.Entry(top, textvariable=self.drv_filtro, width=22).pack(side="left", padx=6)
+        self.drv_lbl = ttk.Label(f, text="Amarelo = driver com mais de 5 anos.", foreground=ui.Tema.p()["mut"])
+        self.drv_lbl.pack(anchor="w")
+        self._mut.append(self.drv_lbl)
+        frame, self.drv_tree = ui.criar_tree(f, ("Dispositivo", "Fabricante", "Versão", "Data"), (320, 220, 140, 100))
+        frame.pack(fill="both", expand=True, pady=(4, 0))
+        self.drv_data = []
 
     def list_drivers(self):
-        self.drv_tree.delete(*self.drv_tree.get_children())
-        self.drv_lbl["text"] = "  Lendo..."
+        self.drv_lbl["text"] = "Lendo..."
         threading.Thread(target=self._drivers_worker, daemon=True).start()
 
     def _drivers_worker(self):
         cmd = ("Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceName -and $_.DriverDate } "
-               "| Sort-Object DriverDate | Select-Object -First 150 DeviceName,Manufacturer,DriverVersion,"
+               "| Sort-Object DriverDate | Select-Object -First 200 DeviceName,Manufacturer,DriverVersion,"
                "@{n='Date';e={$_.DriverDate.ToString('yyyy-MM-dd')}} | ConvertTo-Json")
         try:
             data = json.loads(ps(cmd) or "[]")
         except Exception:
             data = []
-        self.after(0, self.show_drivers, data)
+        self.drv_data = data
+        self.after(0, self.render_drivers)
 
-    def show_drivers(self, data):
-        for d in data:
-            self.drv_tree.insert("", "end", values=(d["DeviceName"], d["Manufacturer"], d["DriverVersion"], d["Date"]))
-        self.drv_lbl["text"] = f"  {len(data)} drivers (mais antigos primeiro)."
+    def render_drivers(self):
+        t = self.drv_tree
+        t.delete(*t.get_children())
+        filtro = self.drv_filtro.get().strip().lower()
+        corte = time.localtime().tm_year - 5
+        n = 0
+        for d in self.drv_data:
+            if filtro and filtro not in f"{d['DeviceName']} {d['Manufacturer']}".lower():
+                continue
+            velho = d["Date"][:4].isdigit() and int(d["Date"][:4]) <= corte
+            t.insert("", "end", values=(d["DeviceName"], d["Manufacturer"], d["DriverVersion"], d["Date"]),
+                     tags=("warn",) if velho else ())
+            n += 1
+        ui.reordenar(t)
+        if self.drv_data:
+            self.drv_lbl["text"] = f"{n} de {len(self.drv_data)} drivers (mais antigos primeiro). Amarelo = mais de 5 anos."
 
     # ---------- Loop ----------
     def tick(self):
+        if self._fim:
+            return
         if self.state() == "withdrawn":  # janela escondida na bandeja
             self.after(2000, self.tick)
             return
-        self.update_resumo()
-        self.proc_ticks += 1
-        if self.proc_ticks % 3 == 1:
-            self.update_procs()
+        self.atualizar_resumo()
+        if self.n % 3 == 0:
+            self.coletar_procs()
+        if self.n % 3 == 1 and self.nb.select() == str(self.f_temps):
+            self.render_temps()
+        self.status["text"] = (f"Atualizado às {time.strftime('%H:%M:%S')}  •  histórico sendo gravado a cada 10 s  •  "
+                               f"{'LibreHardwareMonitor conectada' if self.sensores else 'sem sensores de temperatura'}")
+        self.n += 1
         self.after(1000, self.tick)
 
 

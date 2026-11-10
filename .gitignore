@@ -27,3 +27,6 @@ err.txt
 # Windows / editor
 Thumbs.db
 .vscode/
+
+# Lista pessoal de perifericos
+perifericos.json

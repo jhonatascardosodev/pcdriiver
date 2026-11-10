@@ -1,3 +1,4 @@
 psutil
 pystray
 pillow
+sv-ttk
