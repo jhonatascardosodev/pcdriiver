@@ -1,0 +1,29 @@
+# Claude / IA (não subir)
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.mcp.json
+.cursor/
+.cursorrules
+.aider*
+.copilot/
+.github/copilot-instructions.md
+.windsurf/
+.continue/
+.gemini/
+AGENTS.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Dados locais
+historico.db
+err.txt
+*.log
+
+# Windows / editor
+Thumbs.db
+.vscode/
