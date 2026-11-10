@@ -164,8 +164,6 @@ def _itens_limpeza():
         ("Cache do Brave (feche o Brave antes)",
          [os.path.join(brave, "Cache"), os.path.join(brave, "Code Cache"), os.path.join(brave, "GPUCache")], "pastas"),
         ("Lixeira", [], "lixeira"),
-        ("Cache do pnpm (remove só pacotes que nenhum projeto usa)",
-         [os.path.join(local, "pnpm", "store")], "pnpm"),
         ("Cache do npm (baixa de novo quando precisar)", [os.path.join(local, "npm-cache")], "npm"),
         ("Cache de shaders da NVIDIA (o driver recria; jogos podem travar um pouco na 1ª vez)",
          [os.path.join(local, "NVIDIA", "DXCache"), os.path.join(local, "NVIDIA", "GLCache")], "pastas"),
