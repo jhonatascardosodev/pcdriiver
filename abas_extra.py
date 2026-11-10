@@ -164,7 +164,26 @@ def _itens_limpeza():
         ("Cache do Brave (feche o Brave antes)",
          [os.path.join(brave, "Cache"), os.path.join(brave, "Code Cache"), os.path.join(brave, "GPUCache")], "pastas"),
         ("Lixeira", [], "lixeira"),
+        ("Cache do pnpm (remove só pacotes que nenhum projeto usa)",
+         [os.path.join(local, "pnpm", "store")], "pnpm"),
+        ("Cache do npm (baixa de novo quando precisar)", [os.path.join(local, "npm-cache")], "npm"),
+        ("Cache de shaders da NVIDIA (o driver recria; jogos podem travar um pouco na 1ª vez)",
+         [os.path.join(local, "NVIDIA", "DXCache"), os.path.join(local, "NVIDIA", "GLCache")], "pastas"),
     ]
+
+
+def rodar_limpeza_cmd(tipo, paths):
+    """pnpm/npm têm comando próprio de limpeza. Devolve bytes liberados."""
+    exe = shutil.which("pnpm" if tipo == "pnpm" else "npm")
+    if not exe:
+        return 0
+    args = [exe, "store", "prune"] if tipo == "pnpm" else [exe, "cache", "clean", "--force"]
+    antes = sum(tamanho_pasta(p) for p in paths)
+    try:
+        subprocess.run(args, capture_output=True, timeout=600, creationflags=NOFLAG)
+    except Exception:
+        return 0
+    return max(0, antes - sum(tamanho_pasta(p) for p in paths))
 
 
 def esvaziar_pasta(path):
@@ -260,6 +279,8 @@ class AbaLimpeza(ttk.Frame):
                 antes = self._tamanho_item(i)
                 ps("Clear-RecycleBin -Force -ErrorAction SilentlyContinue")
                 total += antes
+            elif tipo in ("pnpm", "npm"):
+                total += rodar_limpeza_cmd(tipo, paths)
             else:
                 total += sum(esvaziar_pasta(p) for p in paths if p)
         self.after(0, self._fim_limpeza, total)

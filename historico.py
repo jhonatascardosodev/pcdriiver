@@ -44,9 +44,39 @@ def _top_procs(n=3):
 
 
 def gravar(cpu, ram):
+    top = _top_procs()
     with closing(_con()) as c, c:
         c.execute("INSERT OR REPLACE INTO amostras VALUES (?,?,?,?)",
-                  (int(time.time()), cpu, ram, json.dumps(_top_procs())))
+                  (int(time.time()), cpu, ram, json.dumps(top)))
+    return top
+
+
+def ler_temperaturas():
+    """Lê as temperaturas do servidor web da LibreHardwareMonitor.
+    Devolve [(hardware, sensor, graus)]; lista vazia se ela não estiver aberta."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen("http://localhost:8085/data.json", timeout=2) as r:
+            raiz = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return []
+    achados = []
+
+    def andar(no, hardware):
+        filhos = no.get("Children", [])
+        if no.get("Text") == "Temperatures":
+            for f in filhos:
+                try:
+                    graus = float(f.get("Value", "").split()[0].replace(",", "."))
+                except (ValueError, IndexError):
+                    continue
+                achados.append((hardware, f.get("Text", ""), graus))
+            return
+        for f in filhos:
+            andar(f, no.get("Text", "") if f.get("Children") else hardware)
+
+    andar(raiz, "")
+    return achados
 
 
 def limpar_antigos(dias=7):
@@ -94,15 +124,33 @@ class Coletor(threading.Thread):
             try:
                 cpu = psutil.cpu_percent(interval=1)
                 ram = psutil.virtual_memory().percent
-                gravar(cpu, ram)
-                self._checar(cpu, ram)
+                top = gravar(cpu, ram)
+                self._checar(cpu, ram, top)
+                if n % 3 == 0:  # temperaturas a cada ~30 s
+                    self._checar_temps()
                 n += 1
                 if n % 360 == 0:
                     limpar_antigos()
             except Exception:
                 pass
 
-    def _checar(self, cpu, ram):
+    # limites de alerta (°C e MB)
+    LIMITES = {"cpu": 85, "gpu": 85, "disco": 60, "proc_mb": 4096}
+
+    def _checar_temps(self):
+        for hw, sensor, graus in ler_temperaturas():
+            if sensor == "CPU Package" and graus >= self.LIMITES["cpu"]:
+                self._alertar("t_cpu", "CPU quente", f"CPU a {graus:.0f} °C.", espera=300)
+            elif sensor == "GPU Core" and graus >= self.LIMITES["gpu"]:
+                self._alertar("t_gpu", "GPU quente", f"GPU a {graus:.0f} °C.", espera=300)
+            elif sensor == "Temperature" and graus >= self.LIMITES["disco"]:
+                self._alertar("t_" + hw, "Disco quente", f"{hw.strip()} a {graus:.0f} °C.", espera=1800)
+
+    def _checar(self, cpu, ram, top=None):
+        for nome, mb in (top or {}).get("ram", []):
+            if mb >= self.LIMITES["proc_mb"]:
+                self._alertar("p_" + nome, "Programa usando muita RAM",
+                              f"{nome} está usando {mb / 1024:.1f} GB de RAM.", espera=3600)
         self._cpu_alta = self._cpu_alta + 1 if cpu > 90 else 0
         if self._cpu_alta >= 3:
             self._alertar("cpu", "CPU alta", f"CPU em {cpu:.0f}% há alguns segundos.")

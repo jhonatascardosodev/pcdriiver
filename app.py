@@ -300,7 +300,7 @@ class App(tk.Tk):
         top = ttk.Frame(f)
         top.pack(fill="x")
         ttk.Button(top, text="Ler agora", command=self.read_temps).pack(side="left")
-        self.temp_lbl = ttk.Label(top, text="  Precisa da LibreHardwareMonitor aberta (como administrador).")
+        self.temp_lbl = ttk.Label(top, text="  Precisa da LibreHardwareMonitor aberta (administrador) com o Remote Web Server ligado.")
         self.temp_lbl.pack(side="left")
         frame, self.temp_tree = make_tree(f, ("Sensor", "Tipo", "Valor"), (360, 120, 120))
         frame.pack(fill="both", expand=True, pady=6)
@@ -311,27 +311,38 @@ class App(tk.Tk):
         threading.Thread(target=self._temps_worker, daemon=True).start()
 
     def _temps_worker(self):
-        cmd = ("Get-CimInstance -Namespace root\\LibreHardwareMonitor -ClassName Sensor "
-               "-ErrorAction Stop | Where-Object { $_.SensorType -in 'Temperature','Fan','Load' } "
-               "| Select-Object Name,SensorType,Value | ConvertTo-Json")
+        """Lê o servidor web da LibreHardwareMonitor (http://localhost:8085/data.json)."""
+        import urllib.request
         try:
-            out = ps(cmd, 30)
-            data = json.loads(out) if out else []
-            if isinstance(data, dict):
-                data = [data]
-            self.after(0, self.show_temps, data, None)
-        except Exception as e:
-            self.after(0, self.show_temps, [], str(e))
-
-    def show_temps(self, data, err):
-        if not data:
-            self.temp_lbl["text"] = ("  Sem dados. Baixe e abra a LibreHardwareMonitor como administrador "
-                                     "(librehardwaremonitor.org).")
+            with urllib.request.urlopen("http://localhost:8085/data.json", timeout=4) as r:
+                raiz = json.loads(r.read().decode("utf-8"))
+        except Exception:
+            self.after(0, self.show_temps, [])
             return
-        units = {"Temperature": "°C", "Fan": " RPM", "Load": " %"}
-        for d in data:
-            self.temp_tree.insert("", "end", values=(d["Name"], d["SensorType"],
-                                                    f"{d['Value']:.0f}{units.get(d['SensorType'], '')}"))
+        grupos = {"Temperatures": "Temperatura", "Fans": "Ventoinha"}
+        achados = []
+
+        def andar(no, hardware):
+            nome = no.get("Text", "")
+            filhos = no.get("Children", [])
+            if nome in grupos:
+                for f in filhos:
+                    if f.get("Value"):
+                        achados.append((f"{hardware} - {f.get('Text', '')}", grupos[nome], f["Value"]))
+                return
+            for f in filhos:
+                andar(f, nome if filhos and f.get("Children") else hardware)
+
+        andar(raiz, "")
+        self.after(0, self.show_temps, achados)
+
+    def show_temps(self, data):
+        if not data:
+            self.temp_lbl["text"] = ("  Sem dados. Abra a LibreHardwareMonitor como administrador e ligue "
+                                     "Options > Remote Web Server > Run.")
+            return
+        for linha in data:
+            self.temp_tree.insert("", "end", values=linha)
         self.temp_lbl["text"] = f"  {len(data)} sensores."
 
     # ---------- Drivers ----------
