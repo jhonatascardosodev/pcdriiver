@@ -30,3 +30,6 @@ Thumbs.db
 
 # Lista pessoal de perifericos
 perifericos.json
+
+# Preferencias do painel
+config.json

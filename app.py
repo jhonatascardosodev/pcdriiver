@@ -46,6 +46,38 @@ def duracao(seg):
     return (f"{d}d " if d else "") + f"{h:02d}h {m:02d}min"
 
 
+ARQ_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+# blocos do Resumo que o usuário pode mostrar ou esconder
+BLOCOS = [
+    ("cpu", "Medidor de CPU"),
+    ("ram", "Medidor de memória RAM"),
+    ("disco_c", "Medidor do disco C:"),
+    ("sistema", "Cartão Sistema (tempo ligado, processos)"),
+    ("temps", "Temperaturas"),
+    ("grafico", "Gráfico de CPU e RAM ao vivo"),
+    ("discos", "Lista de discos"),
+    ("avisos", "Avisos"),
+]
+
+
+def ler_config():
+    try:
+        with open(ARQ_CONFIG, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def salvar_config(cfg):
+    try:
+        with open(ARQ_CONFIG, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
 class CartaoTemp(tk.Frame):
     """Cartão de temperatura: nome, valor grande e barra colorida."""
 
@@ -72,9 +104,10 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Monitor PC")
-        self.geometry("1180x780")
+        self.cfg = ler_config()
         self.minsize(960, 680)
-        ui.aplicar_tema(self, "dark")
+        self.restaurar_janela()
+        ui.aplicar_tema(self, "light" if self.cfg.get("tema") == "light" else "dark")
 
         self.sensores = []
         self.live = deque(maxlen=120)
@@ -128,7 +161,9 @@ class App(tk.Tk):
         sub = ttk.Label(h, text=f"   {socket.gethostname()}  •  {papel}", foreground=ui.Tema.p()["mut"])
         sub.pack(side="left", pady=(8, 0))
         self._mut.append(sub)
-        self.btn_tema = ttk.Button(h, text="☀  Tema claro", command=self.alternar_tema)
+        claro = ui.Tema.nome == "light"
+        self.btn_tema = ttk.Button(h, text="☾  Tema escuro" if claro else "☀  Tema claro",
+                                   command=self.alternar_tema)
         self.btn_tema.pack(side="right")
 
     def build_status(self):
@@ -142,6 +177,40 @@ class App(tk.Tk):
         self.btn_tema["text"] = "☾  Tema escuro" if novo == "light" else "☀  Tema claro"
         for w in self._mut:
             w.configure(foreground=ui.Tema.p()["mut"])
+        self.cfg["tema"] = novo
+        salvar_config(self.cfg)
+
+    # ---------- tamanho e posição da janela ----------
+    def restaurar_janela(self):
+        j = self.cfg.get("janela") or {}
+        try:
+            w, h = int(j["w"]), int(j["h"])
+            x, y = int(j["x"]), int(j["y"])
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+            w, h = max(960, min(w, sw)), max(680, min(h, sh))
+            if not (-w + 150 < x < sw - 150 and 0 <= y < sh - 100):  # fora da tela (monitor desligado)
+                raise ValueError
+            self.geometry(f"{w}x{h}+{x}+{y}")
+        except (KeyError, TypeError, ValueError):
+            self.geometry("1180x780")
+        if j.get("maximizada"):
+            try:
+                self.state("zoomed")
+            except tk.TclError:
+                pass
+
+    def salvar_janela(self):
+        try:
+            j = dict(self.cfg.get("janela") or {})
+            if self.state() == "zoomed":
+                j["maximizada"] = True  # mantém o último tamanho normal
+            elif self.state() == "normal":
+                j.update(w=self.winfo_width(), h=self.winfo_height(), x=self.winfo_x(), y=self.winfo_y(),
+                         maximizada=False)
+            self.cfg["janela"] = j
+            salvar_config(self.cfg)
+        except tk.TclError:
+            pass
 
     # ---------- bandeja / ciclo de vida ----------
     def on_tab(self, _):
@@ -161,6 +230,7 @@ class App(tk.Tk):
         self.lift()
 
     def fechar(self):
+        self.salvar_janela()
         if self.icon:
             self.withdraw()
             if not self.avisou_bandeja:
@@ -170,6 +240,8 @@ class App(tk.Tk):
             self.sair()
 
     def sair(self):
+        if self.winfo_viewable():  # janela escondida na bandeja mantém o que foi salvo ao fechar
+            self.salvar_janela()
         self._fim = True
         self.coletor.parar()
         if self.icon:
@@ -191,28 +263,29 @@ class App(tk.Tk):
     # ---------- Resumo ----------
     def _medidor(self, parent, titulo):
         c = ui.Cartao(parent)
-        c.pack(side="left", padx=(0, 12))
         m = ui.Medidor(c, titulo)
         m.pack(padx=10, pady=8)
-        return m
+        return m, c
 
     def build_resumo(self):
         f = ttk.Frame(self.nb, padding=12)
         self.nb.add(f, text="Resumo")
+        self.f_resumo = f
+        barra = ttk.Frame(f)
+        barra.pack(fill="x", pady=(0, 8))
+        ttk.Button(barra, text="⚙  Personalizar painel", command=self.personalizar).pack(side="right")
         linha = ttk.Frame(f)
-        linha.pack(fill="x")
-        self.m_cpu = self._medidor(linha, "CPU")
-        self.m_ram = self._medidor(linha, "Memória RAM")
-        self.m_disco = self._medidor(linha, "Disco C:")
+        self.linha = linha
+        self.m_cpu, c_cpu = self._medidor(linha, "CPU")
+        self.m_ram, c_ram = self._medidor(linha, "Memória RAM")
+        self.m_disco, c_disco = self._medidor(linha, "Disco C:")
         c = ui.Cartao(linha)
-        c.pack(side="left", fill="both", expand=True)
         ui.Texto(c, "Sistema", 12, True).pack(anchor="w", padx=16, pady=(14, 6))
         self.lb_sis = ui.Texto(c, "", 10, cor="mut")
         self.lb_sis.configure(justify="left")
         self.lb_sis.pack(anchor="w", padx=16)
 
         self.temp_box = ttk.Frame(f)
-        self.temp_box.pack(fill="x", pady=(12, 0))
         self.temp_aviso = ui.Cartao(self.temp_box)
         self.temp_aviso.pack(fill="x")
         ui.Texto(self.temp_aviso,
@@ -221,15 +294,13 @@ class App(tk.Tk):
                  9, cor="mut").pack(anchor="w", padx=14, pady=12)
 
         cg = ui.Cartao(f)
-        cg.pack(fill="both", expand=True, pady=(12, 0))
         ui.Texto(cg, "CPU e RAM — últimos 2 minutos (passe o mouse)", 10, True).pack(anchor="w", padx=14, pady=(10, 0))
         self.g_live = ui.Grafico(cg, [(1, "CPU", "cpu"), (2, "RAM", "ram")], altura=150)
         self.g_live.pack(fill="both", expand=True, padx=8, pady=8)
 
         baixo = ttk.Frame(f)
-        baixo.pack(fill="x", pady=(12, 0))
+        self.baixo = baixo
         cd = ui.Cartao(baixo)
-        cd.pack(side="left", fill="both", expand=True, padx=(0, 12))
         ui.Texto(cd, "Discos", 10, True).pack(anchor="w", padx=14, pady=(10, 4))
         self.box_discos = tk.Frame(cd)
         self.box_discos._estilo = ("card", None)
@@ -237,11 +308,78 @@ class App(tk.Tk):
         self.box_discos.pack(fill="x", padx=14, pady=(0, 10))
         self.linhas_disco = {}
         ca = ui.Cartao(baixo)
-        ca.pack(side="left", fill="both", expand=True)
         ui.Texto(ca, "Avisos", 10, True).pack(anchor="w", padx=14, pady=(10, 4))
         self.lb_avisos = ui.Texto(ca, "", 10)
         self.lb_avisos.configure(justify="left", anchor="w")
         self.lb_avisos.pack(anchor="w", padx=14, pady=(0, 10))
+
+        esq, cheio = {"side": "left", "padx": (0, 12)}, {"side": "left", "fill": "both", "expand": True}
+        self.blocos = {
+            "cpu": (c_cpu, esq), "ram": (c_ram, esq), "disco_c": (c_disco, esq), "sistema": (c, cheio),
+            "discos": (cd, {**cheio, "padx": (0, 12)}), "avisos": (ca, cheio),
+        }
+        self.linhas = [
+            (linha, ["cpu", "ram", "disco_c", "sistema"], {"fill": "x"}),
+            (self.temp_box, ["temps"], {"fill": "x", "pady": (12, 0)}),
+            (cg, ["grafico"], {"fill": "both", "expand": True, "pady": (12, 0)}),
+            (baixo, ["discos", "avisos"], {"fill": "x", "pady": (12, 0)}),
+        ]
+        self.aplicar_layout()
+
+    def _visivel(self, chave):
+        return self.cfg.get("visivel", {}).get(chave, True)
+
+    def aplicar_layout(self):
+        """Mostra só os blocos escolhidos pelo usuário no Resumo."""
+        for cont, chaves, _ in self.linhas:
+            cont.pack_forget()
+            for k in chaves:
+                if k in self.blocos:
+                    self.blocos[k][0].pack_forget()
+        for cont, chaves, opts in self.linhas:
+            ativos = [k for k in chaves if self._visivel(k)]
+            if not ativos:
+                continue
+            for k in ativos:
+                if k in self.blocos:
+                    w, o = self.blocos[k]
+                    w.pack(**o)
+            cont.pack(**opts)
+
+    def personalizar(self):
+        win = tk.Toplevel(self)
+        win.title("Personalizar painel")
+        win.transient(self)
+        win.resizable(False, False)
+        box = ttk.Frame(win, padding=20)
+        box.pack(fill="both", expand=True)
+        ttk.Label(box, text="O que mostrar no Resumo", font=(ui.FONTE, 13, "bold")).pack(anchor="w")
+        ttk.Label(box, text="As mudanças valem na hora e ficam salvas.",
+                  foreground=ui.Tema.p()["mut"]).pack(anchor="w", pady=(2, 12))
+        vars_ = {}
+
+        def mudou():
+            self.cfg["visivel"] = {k: v.get() for k, v in vars_.items()}
+            salvar_config(self.cfg)
+            self.aplicar_layout()
+
+        for chave, nome in BLOCOS:
+            v = tk.BooleanVar(value=self._visivel(chave))
+            vars_[chave] = v
+            ttk.Checkbutton(box, text=nome, variable=v, command=mudou).pack(anchor="w", pady=3)
+
+        def tudo():
+            for v in vars_.values():
+                v.set(True)
+            mudou()
+
+        linha = ttk.Frame(box)
+        linha.pack(fill="x", pady=(14, 0))
+        ttk.Button(linha, text="Mostrar tudo", command=tudo).pack(side="left")
+        ttk.Button(linha, text="Fechar", style="Accent.TButton", command=win.destroy).pack(side="right")
+        win.update_idletasks()
+        win.geometry(f"+{self.winfo_rootx() + 80}+{self.winfo_rooty() + 80}")
+        win.grab_set()
 
     def atualizar_resumo(self):
         p = ui.Tema.p()
