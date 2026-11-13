@@ -13,6 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 import psutil
 
 import abas_extra
+import caminhos
 import config_aba
 import historico
 import meupc
@@ -48,7 +49,7 @@ def duracao(seg):
     return (f"{d}d " if d else "") + f"{h:02d}h {m:02d}min"
 
 
-ARQ_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+ARQ_CONFIG = caminhos.dado("config.json")
 
 # blocos do Resumo que o usuário pode mostrar ou esconder
 BLOCOS = [

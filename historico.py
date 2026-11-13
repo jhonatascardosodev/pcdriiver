@@ -9,7 +9,9 @@ from contextlib import closing
 
 import psutil
 
-DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "historico.db")
+import caminhos
+
+DB = caminhos.dado("historico.db")
 
 
 def _con():

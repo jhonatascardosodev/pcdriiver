@@ -1,9 +1,8 @@
 """Aba Configurações: limites dos alertas e início automático com o Windows."""
-import os
-import sys
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+import caminhos
 import historico
 import ui
 
@@ -14,7 +13,6 @@ except ImportError:  # fora do Windows
 
 CHAVE_RUN = r"Software\Microsoft\Windows\CurrentVersion\Run"
 NOME_RUN = "MonitorPC"
-RAIZ = os.path.dirname(os.path.abspath(__file__))
 
 # (chave em historico.LIMITES, rótulo, unidade, mínimo, máximo, fator de exibição)
 CAMPOS = [
@@ -29,11 +27,8 @@ CAMPOS = [
 
 
 def comando_inicio():
-    py = sys.executable
-    pyw = os.path.join(os.path.dirname(py), "pythonw.exe")
-    if os.path.exists(pyw):
-        py = pyw
-    return f'"{py}" "{os.path.join(RAIZ, "app.py")}" --minimizado'
+    exe, args = caminhos.comando_app("--minimizado")
+    return " ".join(f'"{a}"' if a != "--minimizado" else a for a in [exe, *args])
 
 
 def inicio_ativo():

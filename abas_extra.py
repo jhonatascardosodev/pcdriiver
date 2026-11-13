@@ -12,6 +12,7 @@ from tkinter import messagebox, ttk
 
 import psutil
 
+import caminhos
 import historico
 import ui
 
@@ -368,7 +369,6 @@ class AbaSistema(ttk.Frame):
 
 def relancar_como_admin():
     """Reabre este programa pedindo permissão de administrador."""
-    exe = sys.executable.replace("python.exe", "pythonw.exe")
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
-    ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, f'"{script}"',
-                                        os.path.dirname(script), 1)
+    exe, args = caminhos.comando_app()
+    ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, " ".join(f'"{a}"' for a in args) or None,
+                                        caminhos.PASTA, 1)

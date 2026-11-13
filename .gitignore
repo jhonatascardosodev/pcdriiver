@@ -33,3 +33,6 @@ perifericos.json
 
 # Preferencias do painel
 config.json
+build/
+dist/
+*.spec

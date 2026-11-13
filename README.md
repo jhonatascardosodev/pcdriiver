@@ -4,6 +4,17 @@ Painel para Windows que mostra, em tempo real, o que está pesando no seu comput
 
 Feito em Python com tkinter, com tema escuro/claro e gráficos interativos.
 
+<!-- Capturas de tela: salve em docs/ e descomente as linhas abaixo
+![Resumo (tema escuro)](docs/resumo-escuro.png)
+![Resumo (tema claro)](docs/resumo-claro.png)
+-->
+
+## Download
+
+Sem Python instalado? Baixe o `MonitorPC.exe` na página de [Releases](https://github.com/jhonatascardosodev/pcdriiver/releases/latest) e dê dois cliques. Não há instalador: o programa é um arquivo único, e os dados ficam na mesma pasta dele.
+
+O arquivo não é assinado, então o Windows SmartScreen pode avisar na primeira vez. Clique em **Mais informações** e depois em **Executar assim mesmo**. O código-fonte está neste repositório, e você pode gerar o `.exe` por conta própria (veja [Gerar o .exe](#gerar-o-exe-opcional)).
+
 ## Recursos
 
 | Aba | O que faz |
@@ -50,6 +61,10 @@ py app.py
 
 Ou dê dois cliques em `iniciar.bat`.
 
+## Gerar o .exe (opcional)
+
+Para rodar sem Python instalado, dê dois cliques em `build.bat`. Ele usa o PyInstaller e cria `dist\MonitorPC.exe`, um arquivo único. O histórico, o `config.json` e a lista de periféricos passam a ficar na mesma pasta do `.exe`, então mantenha-o numa pasta sua (não em `dist`, que é apagada ao refazer o build).
+
 ## Temperaturas (opcional)
 
 O Windows não expõe temperaturas de forma padrão, então o programa lê os dados do LibreHardwareMonitor:
@@ -72,7 +87,7 @@ A aba **Sistema** tem o botão "Reiniciar como administrador".
 
 ## Dados locais
 
-O programa grava na própria pasta, e estes arquivos não vão para o Git:
+O programa grava na própria pasta (ou ao lado do `.exe`), e estes arquivos não vão para o Git:
 
 - `historico.db`: histórico de uso (SQLite);
 - `perifericos.json`: sua lista de periféricos;
@@ -88,10 +103,16 @@ O programa grava na própria pasta, e estes arquivos não vão para o Git:
 | `abas_extra.py` | Abas Histórico, Limpeza e Sistema |
 | `config_aba.py` | Aba Configurações (limites e início com o Windows) |
 | `historico.py` | Coleta, banco de dados, sensores e alertas |
+| `caminhos.py` | Onde ficam os dados e como o programa se reabre (código ou `.exe`) |
 | `tray.py` | Ícone da bandeja |
+| `build.bat` | Gera o `.exe` com PyInstaller |
 
 ## Limitações
 
 - O nome da placa-mãe aparece como a BIOS informa (às vezes genérico, como "OEM H110").
 - Headset analógico, mousepad e similares não são detectáveis; use a lista manual.
 - O medidor e o alerta de espaço livre usam apenas o disco C:.
+
+## Licença
+
+[MIT](LICENSE)

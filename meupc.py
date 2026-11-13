@@ -6,10 +6,11 @@ import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+import caminhos
 import ui
 
 NOFLAG = 0x08000000
-ARQ_MANUAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "perifericos.json")
+ARQ_MANUAL = caminhos.dado("perifericos.json")
 
 TIPOS = ["Mouse", "Teclado", "Headset", "Fone de ouvido", "Microfone", "Caixa de som", "Webcam", "Monitor",
          "Controle / Gamepad", "Mousepad", "Cadeira", "Impressora", "Roteador / Rede", "Outro"]
