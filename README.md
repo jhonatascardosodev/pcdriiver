@@ -17,6 +17,7 @@ Feito em Python com tkinter, com tema escuro/claro e gráficos interativos.
 | **Temperaturas** | Sensores de CPU, GPU, discos e ventoinhas |
 | **Drivers** | Lista de drivers instalados com versão e data |
 | **Sistema** | Mostra o pagefile e permite movê-lo do HDD para o SSD |
+| **Configurações** | Ajusta os limites dos alertas e liga o início automático com o Windows |
 
 **Bandeja do sistema:** ao fechar a janela, o programa continua rodando, coleta o histórico a cada 10 segundos e envia notificações quando:
 
@@ -24,6 +25,13 @@ Feito em Python com tkinter, com tema escuro/claro e gráficos interativos.
 - a RAM passa de 90% ou a CPU fica acima de 90% por tempo prolongado;
 - o disco C: tem menos de 5 GB livres;
 - um processo usa 4 GB de memória ou mais.
+
+Esses são os valores padrão; todos podem ser alterados na aba **Configurações**.
+
+## Configurações
+
+- **Limites dos alertas:** temperatura de CPU, GPU e discos, uso de RAM e de CPU, espaço livre mínimo no C: e RAM de um único programa. Valem na hora para os avisos do Resumo e para as notificações da bandeja, e há um botão para restaurar o padrão.
+- **Iniciar com o Windows:** a caixa de seleção cria uma entrada no registro do usuário (sem precisar de administrador) e o programa abre direto na bandeja, com a opção `--minimizado`. Se mudar a pasta do projeto ou a versão do Python, desligue e ligue a opção de novo.
 
 ## Requisitos
 
@@ -67,7 +75,8 @@ A aba **Sistema** tem o botão "Reiniciar como administrador".
 O programa grava na própria pasta, e estes arquivos não vão para o Git:
 
 - `historico.db`: histórico de uso (SQLite);
-- `perifericos.json`: sua lista de periféricos.
+- `perifericos.json`: sua lista de periféricos;
+- `config.json`: tema, tamanho da janela e limites dos alertas.
 
 ## Estrutura
 
@@ -77,6 +86,7 @@ O programa grava na própria pasta, e estes arquivos não vão para o Git:
 | `ui.py` | Temas e componentes visuais (medidores, gráficos, tabelas) |
 | `meupc.py` | Aba Meu PC e leitura de hardware |
 | `abas_extra.py` | Abas Histórico, Limpeza e Sistema |
+| `config_aba.py` | Aba Configurações (limites e início com o Windows) |
 | `historico.py` | Coleta, banco de dados, sensores e alertas |
 | `tray.py` | Ícone da bandeja |
 
@@ -84,4 +94,4 @@ O programa grava na própria pasta, e estes arquivos não vão para o Git:
 
 - O nome da placa-mãe aparece como a BIOS informa (às vezes genérico, como "OEM H110").
 - Headset analógico, mousepad e similares não são detectáveis; use a lista manual.
-- Os limites de alerta ficam em `LIMITES`, em `historico.py`.
+- O medidor e o alerta de espaço livre usam apenas o disco C:.

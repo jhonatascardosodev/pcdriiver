@@ -102,6 +102,27 @@ def consultar(segundos):
         return cur.fetchall()
 
 
+# Limites de alerta. O dicionário é alterado no lugar, então quem importa vê as mudanças.
+LIMITES_PADRAO = {
+    "cpu": 85,        # temperatura da CPU (°C)
+    "gpu": 85,        # temperatura da GPU (°C)
+    "disco": 60,      # temperatura dos discos (°C)
+    "ram": 90,        # uso de RAM (%)
+    "cpu_uso": 90,    # uso de CPU (%)
+    "livre_gb": 5,    # espaço livre mínimo no C: (GB)
+    "proc_mb": 4096,  # RAM de um único programa (MB)
+}
+LIMITES = dict(LIMITES_PADRAO)
+
+
+def aplicar_limites(salvos):
+    """Aplica limites vindos do config.json, ignorando valores inválidos."""
+    LIMITES.update(LIMITES_PADRAO)
+    for k, v in (salvos or {}).items():
+        if k in LIMITES_PADRAO and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            LIMITES[k] = v
+
+
 class Coletor(threading.Thread):
     """Grava uma amostra a cada `intervalo` segundos e dispara alertas."""
 
@@ -145,31 +166,28 @@ class Coletor(threading.Thread):
             except Exception:
                 pass
 
-    # limites de alerta (°C e MB)
-    LIMITES = {"cpu": 85, "gpu": 85, "disco": 60, "proc_mb": 4096}
-
     def _checar_temps(self):
         for hw, sensor, graus in ler_temperaturas():
-            if sensor == "CPU Package" and graus >= self.LIMITES["cpu"]:
+            if sensor == "CPU Package" and graus >= LIMITES["cpu"]:
                 self._alertar("t_cpu", "CPU quente", f"CPU a {graus:.0f} °C.", espera=300)
-            elif sensor == "GPU Core" and graus >= self.LIMITES["gpu"]:
+            elif sensor == "GPU Core" and graus >= LIMITES["gpu"]:
                 self._alertar("t_gpu", "GPU quente", f"GPU a {graus:.0f} °C.", espera=300)
-            elif sensor == "Temperature" and graus >= self.LIMITES["disco"]:
+            elif sensor == "Temperature" and graus >= LIMITES["disco"]:
                 self._alertar("t_" + hw, "Disco quente", f"{hw.strip()} a {graus:.0f} °C.", espera=1800)
 
     def _checar(self, cpu, ram, top=None):
         for nome, mb in (top or {}).get("ram", []):
-            if mb >= self.LIMITES["proc_mb"]:
+            if mb >= LIMITES["proc_mb"]:
                 self._alertar("p_" + nome, "Programa usando muita RAM",
                               f"{nome} está usando {mb / 1024:.1f} GB de RAM.", espera=3600)
-        self._cpu_alta = self._cpu_alta + 1 if cpu > 90 else 0
+        self._cpu_alta = self._cpu_alta + 1 if cpu > LIMITES["cpu_uso"] else 0
         if self._cpu_alta >= 3:
             self._alertar("cpu", "CPU alta", f"CPU em {cpu:.0f}% há alguns segundos.")
-        if ram > 90:
+        if ram > LIMITES["ram"]:
             self._alertar("ram", "RAM quase cheia", f"RAM em {ram:.0f}%. Feche programas pesados.")
         try:
             livre = psutil.disk_usage("C:\\").free
-            if livre < 5 * 1024**3:
+            if livre < LIMITES["livre_gb"] * 1024**3:
                 self._alertar("disco", "C: quase cheio",
                               f"Só {livre / 1024**3:.1f} GB livres no C:.", espera=3600)
         except OSError:

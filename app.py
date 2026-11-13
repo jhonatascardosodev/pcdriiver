@@ -2,6 +2,7 @@
 import json
 import os
 import socket
+import sys
 import subprocess
 import threading
 import time
@@ -12,6 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 import psutil
 
 import abas_extra
+import config_aba
 import historico
 import meupc
 import ui
@@ -105,6 +107,7 @@ class App(tk.Tk):
         super().__init__()
         self.title("Monitor PC")
         self.cfg = ler_config()
+        historico.aplicar_limites(self.cfg.get("limites"))
         self.minsize(960, 680)
         self.restaurar_janela()
         ui.aplicar_tema(self, "light" if self.cfg.get("tema") == "light" else "dark")
@@ -131,6 +134,8 @@ class App(tk.Tk):
         self.build_temps()
         self.build_drivers()
         self.nb.add(abas_extra.AbaSistema(self.nb, self.reiniciar_admin), text="Sistema")
+        self.nb.add(config_aba.AbaConfig(self.nb, self.cfg, lambda: salvar_config(self.cfg)),
+                    text="Configurações")
         self.nb.bind("<<NotebookTabChanged>>", self.on_tab)
         self.build_status()
 
@@ -150,6 +155,8 @@ class App(tk.Tk):
 
         ui.restilizar(self)
         psutil.cpu_percent()
+        if "--minimizado" in sys.argv and self.icon:  # início automático: começa só na bandeja
+            self.withdraw()
         self.tick()
 
     # ---------- cabeçalho / rodapé ----------
@@ -395,10 +402,11 @@ class App(tk.Tk):
                 avisos.append((f"C: quase cheio (livre {gb(du.free)})", "bad"))
         except OSError:
             pass
-        if vm.percent > 85:
-            avisos.append(("RAM acima de 85%. Feche programas pesados.", "warn"))
-        if cpu > 90:
-            avisos.append(("CPU acima de 90%.", "warn"))
+        lim = historico.LIMITES
+        if vm.percent > lim["ram"]:
+            avisos.append((f"RAM acima de {lim['ram']:g}%. Feche programas pesados.", "warn"))
+        if cpu > lim["cpu_uso"]:
+            avisos.append((f"CPU acima de {lim['cpu_uso']:g}%.", "warn"))
         for nome, graus, lim in self.temps_atuais():
             if graus >= lim:
                 avisos.append((f"{nome} quente: {graus:.0f} °C", "bad"))
@@ -446,11 +454,11 @@ class App(tk.Tk):
             if g != "Temperatura" or v is None:
                 continue
             if s == "CPU Package":
-                res.append(("CPU", v, 85))
+                res.append(("CPU", v, historico.LIMITES["cpu"]))
             elif s == "GPU Core":
-                res.append(("GPU", v, 85))
+                res.append(("GPU", v, historico.LIMITES["gpu"]))
             elif s == "Temperature":
-                res.append((f"Disco {h.strip()}", v, 60))
+                res.append((f"Disco {h.strip()}", v, historico.LIMITES["disco"]))
         return res
 
     def atualizar_cards_temp(self):
