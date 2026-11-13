@@ -4,10 +4,9 @@ Painel para Windows que mostra, em tempo real, o que está pesando no seu comput
 
 Feito em Python com tkinter, com tema escuro/claro e gráficos interativos.
 
-<!-- Capturas de tela: salve em docs/ e descomente as linhas abaixo
-![Resumo (tema escuro)](docs/resumo-escuro.png)
-![Resumo (tema claro)](docs/resumo-claro.png)
--->
+![Resumo no tema escuro](docs/temaescuro.png)
+
+![Resumo no tema claro](docs/temaclaro.png)
 
 ## Download
 
